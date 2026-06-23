@@ -70,8 +70,9 @@ class ProcessadorAgendamento:
     def processar(self, arqs: dict, pasta_out: str, prefixo: str):
         """
         arqs = {
-            'sap':  caminho SAP Export (.xlsx/.txt),
-            'cnpj': caminho tabela centro -> CNPJ,
+            'sap':       caminho SAP Export (.xlsx/.txt),
+            'cnpj_forn': caminho tabela Contrato -> CNPJ Fornecedor,
+            'cnpj':      caminho tabela Centro -> CNPJ Destinatario/Emissor,
         }
         Retorna (caminho_saida, n_linhas)
         """
@@ -80,9 +81,6 @@ class ProcessadorAgendamento:
         sap = self.ler(arqs['sap'], 'SAP Export')
 
         c_ped      = self.col(sap, ['Pedido de compras', 'Pedido', 'PO', 'Doc.compra'], 'SAP Export')
-        c_forn     = self.col(sap, ['Descricao do fornecedor', 'Descrição do fornecedor',
-                                    'Nome emissor', 'Fornecedor', 'Vendor Name',
-                                    'Fornecedor/centro fornecedor'], 'SAP Export')
         c_mat      = self.col(sap, ['Codigo do material', 'Código do material',
                                     'Material', 'Cod. Material', 'Cód. Material',
                                     'Cod Material'], 'SAP Export')
@@ -91,14 +89,46 @@ class ProcessadorAgendamento:
         c_data     = self.col(sap, ['Data doc.', 'Data Documento', 'Data Doc.', 'Posting Date'], 'SAP Export')
         c_centro   = self.col(sap, ['Entregue centro', 'Centro', 'Plant', 'Entregue em', 'Cen.'], 'SAP Export')
         c_contrato = self.col(sap, ['Contrato', 'Contrato de compra',
-                                    'Scheduling Agreement', 'SA'], 'SAP Export', obrigatorio=False)
+                                    'Scheduling Agreement', 'SA'], 'SAP Export')
         c_ean      = self.col(sap, ['EAN', 'EAN/UPC', 'Codigo EAN', 'Código EAN',
                                     'GTIN'], 'SAP Export', obrigatorio=False)
+        c_vunit    = self.col(sap, ['Valor unitario', 'Valor unitário', 'Preco unitario',
+                                    'Preço unitário', 'Unit Price', 'Preço líquido'],
+                              'SAP Export')
+        c_vtot     = self.col(sap, ['Valor total', 'Valor Total', 'Total Value',
+                                    'Total', 'Val.total líq.'], 'SAP Export')
+        c_qpend    = self.col(sap, ['Quantidade pendente', 'Qtd pendente', 'Qtd Pendente',
+                                    'Quantidade a fornecer', 'Qtd a Fornecer',
+                                    'Qty Pending', 'Qty Open', 'Qtd.pendente'],
+                              'SAP Export')
+        c_qsol     = self.col(sap, ['Quantidade solicitada', 'Qtd solicitada',
+                                    'Quantidade pedido', 'Qtd Pedida',
+                                    'Quantidade atendida', 'Qtd Atendida',
+                                    'Qty Ordered', 'Qty Delivered', 'Quantidade'],
+                              'SAP Export')
 
-        cols_sap = [c for c in [c_ped, c_forn, c_mat, c_desc, c_data, c_centro, c_contrato, c_ean] if c]
+        cols_sap = [c for c in [c_ped, c_mat, c_desc, c_data, c_centro,
+                                c_contrato, c_ean, c_vunit, c_vtot, c_qpend, c_qsol] if c]
         sap_df = sap[cols_sap].copy()
+        sap_df['__CONTRATO'] = sap_df[c_contrato].astype(str).str.strip().str.lstrip('0')
 
-        # -- 2. Tabela CNPJ por Centro ──────────────────────────────────────
+        # -- 2. Tabela CNPJ Fornecedor (chave: contrato) ───────────────────
+        cnpj_forn_tab = self.ler(arqs['cnpj_forn'], 'CNPJ Fornecedor')
+
+        c_contrato_forn = self.col(cnpj_forn_tab,
+                                   ['Contrato', 'Contrato de compra', 'Scheduling Agreement',
+                                    'SA', 'Numero contrato', 'Número contrato'],
+                                   'CNPJ Fornecedor')
+        c_cnpj_forn     = self.col(cnpj_forn_tab,
+                                   ['CNPJ', 'CNPJ Fornecedor', 'CNPJ do Fornecedor',
+                                    'CNPJ Emissor Fornecedor'],
+                                   'CNPJ Fornecedor')
+
+        cnpj_forn_df = cnpj_forn_tab[[c_contrato_forn, c_cnpj_forn]].drop_duplicates(
+            subset=c_contrato_forn).copy()
+        cnpj_forn_df['__CONTRATO'] = cnpj_forn_df[c_contrato_forn].astype(str).str.strip().str.lstrip('0')
+
+        # -- 3. Tabela CNPJ por Centro ──────────────────────────────────────
         cnpj_tab = self.ler(arqs['cnpj'], 'CNPJ Centros')
 
         c_cent_tab  = self.col(cnpj_tab, ['Centro', 'Cod Centro', 'Cód Centro',
@@ -111,22 +141,30 @@ class ProcessadorAgendamento:
         cnpj_df = cnpj_tab[[c_cent_tab, c_cnpj_tab] + ([c_cnpj_emit] if c_cnpj_emit else [])].copy()
         cnpj_df['__CENTRO'] = cnpj_df[c_cent_tab].astype(str).str.strip()
 
-        # -- 3. Cruzamento SAP + CNPJ por Centro ───────────────────────────
-        sap_df['__CENTRO'] = sap_df[c_centro].astype(str).str.strip()
-        merged = pd.merge(sap_df, cnpj_df, on='__CENTRO', how='left')
+        # -- 4. Cruzamentos ────────────────────────────────────────────────
+        # SAP + CNPJ Fornecedor (via contrato)
+        merged = pd.merge(sap_df, cnpj_forn_df[['__CONTRATO', c_cnpj_forn]],
+                          on='__CONTRATO', how='left')
 
-        # -- 4. Montar arquivo final ───────────────────────────────────────
+        # + CNPJ por Centro (via centro)
+        merged['__CENTRO'] = merged[c_centro].astype(str).str.strip()
+        merged = pd.merge(merged, cnpj_df, on='__CENTRO', how='left')
+
+        # -- 5. Montar arquivo final ───────────────────────────────────────
         out = pd.DataFrame()
-        out['Codigo Pedido']        = merged[c_ped]
-        out['Contrato']             = merged[c_contrato] if c_contrato else ''
-        out['Fornecedor']           = merged[c_forn]
-        out['Centro']               = merged[c_centro]
-        out['CNPJ Emissor']         = merged[c_cnpj_emit] if c_cnpj_emit else merged[c_cnpj_tab]
-        out['CNPJ Destinatario']    = merged[c_cnpj_tab]
-        out['Data da Emissao']      = merged[c_data]
-        out['EAN']                  = merged[c_ean] if c_ean else ''
-        out['Codigo do Produto']    = merged[c_mat]
-        out['Descricao do Produto'] = merged[c_desc]
+        out['Codigo Pedido']         = merged[c_ped]
+        out['Contrato']              = merged[c_contrato]
+        out['CNPJ Fornecedor']       = merged[c_cnpj_forn]
+        out['CNPJ Emissor']          = merged[c_cnpj_emit] if c_cnpj_emit else merged[c_cnpj_tab]
+        out['CNPJ Destinatario']     = merged[c_cnpj_tab]
+        out['Data da Emissao']       = merged[c_data]
+        out['EAN']                   = merged[c_ean] if c_ean else ''
+        out['Codigo do Produto']     = merged[c_mat]
+        out['Descricao do Produto']  = merged[c_desc]
+        out['Valor unitario']        = merged[c_vunit]
+        out['Valor total']           = merged[c_vtot]
+        out['Quantidade Pendente']   = merged[c_qpend]
+        out['Quantidade Solicitada'] = merged[c_qsol]
 
         out = out.drop_duplicates()
 
@@ -170,10 +208,12 @@ class ProcessadorAgendamento:
                     cell.fill = fill
 
         col_widths = {
-            'Codigo Pedido': 16, 'Contrato': 14, 'Fornecedor': 30,
-            'Centro': 12, 'CNPJ Emissor': 22, 'CNPJ Destinatario': 22,
+            'Codigo Pedido': 16, 'Contrato': 14, 'CNPJ Fornecedor': 22,
+            'CNPJ Emissor': 22, 'CNPJ Destinatario': 22,
             'Data da Emissao': 16, 'EAN': 16, 'Codigo do Produto': 18,
-            'Descricao do Produto': 35,
+            'Descricao do Produto': 35, 'Valor unitario': 16,
+            'Valor total': 14, 'Quantidade Pendente': 20,
+            'Quantidade Solicitada': 22,
         }
         for col_idx, col_name in enumerate(out.columns, 1):
             ws.column_dimensions[get_column_letter(col_idx)].width = col_widths.get(col_name, 15)
@@ -216,14 +256,15 @@ class App:
     COR_WARN    = '#c62828'
 
     LABELS = {
-        'sap':  ('SAP Export',             True,  '*.xlsx *.xls *.xlsb *.txt *.csv'),
-        'cnpj': ('Tabela CNPJ por Centro', True,  '*.xlsx *.xls *.xlsb *.csv'),
+        'sap':       ('SAP Export',              True,  '*.xlsx *.xls *.xlsb *.txt *.csv'),
+        'cnpj_forn': ('CNPJ Fornecedor (Contrato)', True,  '*.xlsx *.xls *.xlsb *.csv'),
+        'cnpj':      ('Tabela CNPJ por Centro',  True,  '*.xlsx *.xls *.xlsb *.csv'),
     }
 
     def __init__(self, root):
         self.root = root
-        self.root.title("Portal de Agendamento — SAP x CNPJ por Centro")
-        self.root.geometry("720x500")
+        self.root.title("Portal de Agendamento — SAP x CNPJ Fornecedor x CNPJ Centro")
+        self.root.geometry("720x540")
         self.root.configure(bg=self.COR_BG)
         self.root.resizable(False, False)
         self.proc = ProcessadorAgendamento()
@@ -238,7 +279,7 @@ class App:
         if CONFIG_PATH.exists():
             with open(CONFIG_PATH, encoding='utf-8') as f:
                 return json.load(f)
-        return {'arquivos': {'sap': '', 'cnpj': ''},
+        return {'arquivos': {'sap': '', 'cnpj_forn': '', 'cnpj': ''},
                 'output': {'pasta': '', 'prefixo': 'Agendamento_SAP_CNPJ'}}
 
     def _save_cfg(self):
@@ -253,7 +294,7 @@ class App:
         hdr = tk.Frame(self.root, bg=self.COR_HEADER, height=64)
         hdr.pack(fill='x')
         hdr.pack_propagate(False)
-        tk.Label(hdr, text='Agendamento — SAP Export x CNPJ por Centro',
+        tk.Label(hdr, text='Agendamento — SAP x CNPJ Fornecedor x CNPJ Centro',
                  fg='white', bg=self.COR_HEADER,
                  font=('Segoe UI', 14, 'bold')).place(relx=.5, rely=.5, anchor='center')
 
@@ -384,7 +425,7 @@ class App:
                 arqs  = dict(self.cfg['arquivos'])
                 pasta = self.cfg['output']['pasta']
                 pref  = self.cfg['output'].get('prefixo', 'Agendamento_SAP_CNPJ')
-                falta = [k for k in ('sap', 'cnpj') if not arqs.get(k)]
+                falta = [k for k in ('sap', 'cnpj_forn', 'cnpj') if not arqs.get(k)]
                 if falta or not pasta:
                     raise ValueError(f"Configure e salve antes de gerar.\nFaltando: {falta or ['pasta de saida']}")
                 dest, n = self.proc.processar(arqs, pasta, pref)
