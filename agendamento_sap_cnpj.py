@@ -67,17 +67,51 @@ class ProcessadorAgendamento:
             )
         return None
 
+    def ler_pedido_fornecedor(self, path):
+        """Le o arquivo de pedidos do fornecedor com deteccao automatica do header."""
+        ext = Path(path).suffix.lower()
+        if ext in ('.xlsx', '.xls', '.xlsb', '.xlsm'):
+            for header_row in range(5):
+                try:
+                    df = pd.read_excel(path, header=header_row, dtype=str)
+                    cols_upper = [str(c).strip().upper() for c in df.columns]
+                    if 'DOC COMPRA' in cols_upper or 'DOC.COMPRA' in cols_upper:
+                        df.columns = [str(c).strip() for c in df.columns]
+                        return df
+                except Exception:
+                    continue
+            df = pd.read_excel(path, dtype=str)
+            df.columns = [str(c).strip() for c in df.columns]
+            return df
+        return self.ler(path, 'Pedido Fornecedor')
+
     def processar(self, arqs: dict, pasta_out: str, prefixo: str):
         """
         arqs = {
-            'sap':       caminho SAP Export (.xlsx/.txt),
-            'cnpj_forn': caminho tabela Contrato -> CNPJ Fornecedor,
-            'cnpj':      caminho tabela Centro -> CNPJ Destinatario/Emissor,
+            'sap':          caminho SAP Export (.xlsx/.txt),
+            'pedido_forn':  caminho base de pedidos do fornecedor (DOC COMPRA + ITEM),
+            'cnpj_forn':    caminho tabela Contrato -> CNPJ Fornecedor,
+            'cnpj':         caminho tabela Centro -> CNPJ Destinatario/Emissor,
         }
         Retorna (caminho_saida, n_linhas)
         """
 
-        # -- 1. SAP Export ──────────────────────────────────────────────────
+        # -- 1. Pedido Fornecedor (filtro DOC COMPRA + ITEM) ────────────────
+        ped_forn = self.ler_pedido_fornecedor(arqs['pedido_forn'])
+
+        c_doc_compra = self.col(ped_forn,
+                                ['DOC COMPRA', 'DOC.COMPRA', 'Doc Compra', 'Doc.compra',
+                                 'Pedido', 'Numero Pedido', 'Nº Pedido'],
+                                'Pedido Fornecedor')
+        c_item_forn  = self.col(ped_forn,
+                                ['ITEM', 'Item', 'Itm', 'Item Pedido', 'Nº Item'],
+                                'Pedido Fornecedor')
+
+        ped_forn['__DOC'] = ped_forn[c_doc_compra].astype(str).str.strip()
+        ped_forn['__ITEM'] = ped_forn[c_item_forn].astype(str).str.strip()
+        filtro_set = set(zip(ped_forn['__DOC'], ped_forn['__ITEM']))
+
+        # -- 2. SAP Export ──────────────────────────────────────────────────
         sap = self.ler(arqs['sap'], 'SAP Export')
 
         c_ped      = self.col(sap, ['Pedido de compras', 'Pedido', 'PO', 'Doc.compra'], 'SAP Export')
@@ -90,29 +124,45 @@ class ProcessadorAgendamento:
         c_centro   = self.col(sap, ['Entregue centro', 'Centro', 'Plant', 'Entregue em', 'Cen.'], 'SAP Export')
         c_contrato = self.col(sap, ['Contrato', 'Contrato de compra',
                                     'Scheduling Agreement', 'SA'], 'SAP Export')
+        c_item_sap = self.col(sap, ['Itm', 'Item', 'Item pedido', 'Nº Item',
+                                      'Item de pedido'], 'SAP Export')
         c_ean      = self.col(sap, ['EAN', 'EAN/UPC', 'Codigo EAN', 'Código EAN',
                                     'GTIN'], 'SAP Export', obrigatorio=False)
         c_vunit    = self.col(sap, ['Valor unitario', 'Valor unitário', 'Preco unitario',
                                     'Preço unitário', 'Unit Price', 'Preço líquido'],
                               'SAP Export')
         c_vtot     = self.col(sap, ['Valor total', 'Valor Total', 'Total Value',
-                                    'Total', 'Val.total líq.'], 'SAP Export')
+                                    'Total', 'Val.total líq.', 'Val.líq.'],
+                              'SAP Export')
         c_qpend    = self.col(sap, ['Quantidade pendente', 'Qtd pendente', 'Qtd Pendente',
                                     'Quantidade a fornecer', 'Qtd a Fornecer',
-                                    'Qty Pending', 'Qty Open', 'Qtd.pendente'],
+                                    'Qty Pending', 'Qty Open', 'Qtd.pendente',
+                                    'a fornecer', 'A faturar'],
                               'SAP Export')
         c_qsol     = self.col(sap, ['Quantidade solicitada', 'Qtd solicitada',
                                     'Quantidade pedido', 'Qtd Pedida',
                                     'Quantidade atendida', 'Qtd Atendida',
-                                    'Qty Ordered', 'Qty Delivered', 'Quantidade'],
+                                    'Qty Ordered', 'Qty Delivered', 'Quantidade',
+                                    'Qtd.pedido'],
                               'SAP Export')
 
-        cols_sap = [c for c in [c_ped, c_mat, c_desc, c_data, c_centro,
+        cols_sap = [c for c in [c_ped, c_item_sap, c_mat, c_desc, c_data, c_centro,
                                 c_contrato, c_ean, c_vunit, c_vtot, c_qpend, c_qsol] if c]
         sap_df = sap[cols_sap].copy()
+
+        # -- Filtrar SAP pelo cruzamento com Pedido Fornecedor (DOC COMPRA + ITEM)
+        sap_df['__DOC'] = sap_df[c_ped].astype(str).str.strip()
+        sap_df['__ITEM'] = sap_df[c_item_sap].astype(str).str.strip()
+        sap_df = sap_df[sap_df.apply(lambda r: (r['__DOC'], r['__ITEM']) in filtro_set, axis=1)].copy()
+
+        if sap_df.empty:
+            raise ValueError(
+                'Nenhum item do SAP corresponde aos pedidos do fornecedor.\n'
+                'Verifique se as colunas DOC COMPRA/ITEM estao corretas.')
+
         sap_df['__CONTRATO'] = sap_df[c_contrato].astype(str).str.strip().str.lstrip('0')
 
-        # -- 2. Tabela CNPJ Fornecedor (chave: contrato) ───────────────────
+        # -- 3. Tabela CNPJ Fornecedor (chave: contrato) ───────────────────
         cnpj_forn_tab = self.ler(arqs['cnpj_forn'], 'CNPJ Fornecedor')
 
         c_contrato_forn = self.col(cnpj_forn_tab,
@@ -121,14 +171,15 @@ class ProcessadorAgendamento:
                                    'CNPJ Fornecedor')
         c_cnpj_forn     = self.col(cnpj_forn_tab,
                                    ['CNPJ', 'CNPJ Fornecedor', 'CNPJ do Fornecedor',
-                                    'CNPJ Emissor Fornecedor'],
+                                    'CNPJ Emissor Fornecedor', 'CNPJ/CPF emissor',
+                                    'CNPJ/CPF'],
                                    'CNPJ Fornecedor')
 
         cnpj_forn_df = cnpj_forn_tab[[c_contrato_forn, c_cnpj_forn]].drop_duplicates(
             subset=c_contrato_forn).copy()
         cnpj_forn_df['__CONTRATO'] = cnpj_forn_df[c_contrato_forn].astype(str).str.strip().str.lstrip('0')
 
-        # -- 3. Tabela CNPJ por Centro ──────────────────────────────────────
+        # -- 4. Tabela CNPJ por Centro ──────────────────────────────────────
         cnpj_tab = self.ler(arqs['cnpj'], 'CNPJ Centros')
 
         c_cent_tab  = self.col(cnpj_tab, ['Centro', 'Cod Centro', 'Cód Centro',
@@ -141,7 +192,7 @@ class ProcessadorAgendamento:
         cnpj_df = cnpj_tab[[c_cent_tab, c_cnpj_tab] + ([c_cnpj_emit] if c_cnpj_emit else [])].copy()
         cnpj_df['__CENTRO'] = cnpj_df[c_cent_tab].astype(str).str.strip()
 
-        # -- 4. Cruzamentos ────────────────────────────────────────────────
+        # -- 5. Cruzamentos ────────────────────────────────────────────────
         # SAP + CNPJ Fornecedor (via contrato)
         merged = pd.merge(sap_df, cnpj_forn_df[['__CONTRATO', c_cnpj_forn]],
                           on='__CONTRATO', how='left')
@@ -150,7 +201,7 @@ class ProcessadorAgendamento:
         merged['__CENTRO'] = merged[c_centro].astype(str).str.strip()
         merged = pd.merge(merged, cnpj_df, on='__CENTRO', how='left')
 
-        # -- 5. Montar arquivo final ───────────────────────────────────────
+        # -- 6. Montar arquivo final ───────────────────────────────────────
         out = pd.DataFrame()
         out['Codigo Pedido']         = merged[c_ped]
         out['Contrato']              = merged[c_contrato]
@@ -168,7 +219,7 @@ class ProcessadorAgendamento:
 
         out = out.drop_duplicates()
 
-        # -- 5. Salvar ─────────────────────────────────────────────────────
+        # -- 7. Salvar ─────────────────────────────────────────────────────
         os.makedirs(pasta_out, exist_ok=True)
         ts = datetime.now().strftime('%d%m%Y_%H%M%S')
         dest = os.path.join(pasta_out, f"{prefixo}_{ts}.xlsx")
@@ -256,15 +307,16 @@ class App:
     COR_WARN    = '#c62828'
 
     LABELS = {
-        'sap':       ('SAP Export',              True,  '*.xlsx *.xls *.xlsb *.txt *.csv'),
-        'cnpj_forn': ('CNPJ Fornecedor (Contrato)', True,  '*.xlsx *.xls *.xlsb *.csv'),
-        'cnpj':      ('Tabela CNPJ por Centro',  True,  '*.xlsx *.xls *.xlsb *.csv'),
+        'sap':         ('SAP Export',                  True,  '*.xlsx *.xls *.xlsb *.txt *.csv'),
+        'pedido_forn': ('Pedido Fornecedor (DOC COMPRA)', True,  '*.xlsx *.xls *.xlsb *.csv'),
+        'cnpj_forn':   ('CNPJ Fornecedor (Contrato)',  True,  '*.xlsx *.xls *.xlsb *.csv'),
+        'cnpj':        ('Tabela CNPJ por Centro',      True,  '*.xlsx *.xls *.xlsb *.csv'),
     }
 
     def __init__(self, root):
         self.root = root
-        self.root.title("Portal de Agendamento — SAP x CNPJ Fornecedor x CNPJ Centro")
-        self.root.geometry("720x540")
+        self.root.title("Portal de Agendamento — SAP x Pedido Fornecedor x CNPJ")
+        self.root.geometry("720x600")
         self.root.configure(bg=self.COR_BG)
         self.root.resizable(False, False)
         self.proc = ProcessadorAgendamento()
@@ -279,7 +331,7 @@ class App:
         if CONFIG_PATH.exists():
             with open(CONFIG_PATH, encoding='utf-8') as f:
                 return json.load(f)
-        return {'arquivos': {'sap': '', 'cnpj_forn': '', 'cnpj': ''},
+        return {'arquivos': {'sap': '', 'pedido_forn': '', 'cnpj_forn': '', 'cnpj': ''},
                 'output': {'pasta': '', 'prefixo': 'Agendamento_SAP_CNPJ'}}
 
     def _save_cfg(self):
@@ -294,7 +346,7 @@ class App:
         hdr = tk.Frame(self.root, bg=self.COR_HEADER, height=64)
         hdr.pack(fill='x')
         hdr.pack_propagate(False)
-        tk.Label(hdr, text='Agendamento — SAP x CNPJ Fornecedor x CNPJ Centro',
+        tk.Label(hdr, text='Agendamento — SAP x Pedido Fornecedor x CNPJ',
                  fg='white', bg=self.COR_HEADER,
                  font=('Segoe UI', 14, 'bold')).place(relx=.5, rely=.5, anchor='center')
 
@@ -426,7 +478,7 @@ class App:
 
         def run():
             try:
-                falta = [k for k in ('sap', 'cnpj_forn', 'cnpj') if not arqs.get(k)]
+                falta = [k for k in ('sap', 'pedido_forn', 'cnpj_forn', 'cnpj') if not arqs.get(k)]
                 if falta or not pasta:
                     raise ValueError(f"Selecione todos os arquivos e a pasta de saida.\nFaltando: {falta or ['pasta de saida']}")
                 dest, n = self.proc.processar(arqs, pasta, pref)
