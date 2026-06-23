@@ -420,14 +420,15 @@ class App:
         self._busy = True
         self.btn.config(state='disabled', text='Processando...')
 
+        arqs = {k: v.get().strip() for k, v in self.entries.items()}
+        pasta = self.var_pasta.get().strip()
+        pref  = self.cfg['output'].get('prefixo', 'Agendamento_SAP_CNPJ')
+
         def run():
             try:
-                arqs  = dict(self.cfg['arquivos'])
-                pasta = self.cfg['output']['pasta']
-                pref  = self.cfg['output'].get('prefixo', 'Agendamento_SAP_CNPJ')
                 falta = [k for k in ('sap', 'cnpj_forn', 'cnpj') if not arqs.get(k)]
                 if falta or not pasta:
-                    raise ValueError(f"Configure e salve antes de gerar.\nFaltando: {falta or ['pasta de saida']}")
+                    raise ValueError(f"Selecione todos os arquivos e a pasta de saida.\nFaltando: {falta or ['pasta de saida']}")
                 dest, n = self.proc.processar(arqs, pasta, pref)
                 self._log(f'Gerado: {Path(dest).name} ({n} linhas)')
                 self.root.after(0, lambda: messagebox.showinfo(
