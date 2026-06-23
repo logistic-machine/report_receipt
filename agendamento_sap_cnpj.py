@@ -433,8 +433,9 @@ class App:
                 self.root.after(0, lambda: messagebox.showinfo(
                     'Concluido', f'Arquivo gerado com sucesso!\n\n{dest}\n\n{n} linhas exportadas.'))
             except Exception as e:
-                self._log(f'Erro: {e}')
-                self.root.after(0, lambda: messagebox.showerror('Erro', str(e)))
+                erro_msg = str(e)
+                self._log(f'Erro: {erro_msg}')
+                self.root.after(0, lambda msg=erro_msg: messagebox.showerror('Erro', msg))
             finally:
                 self._busy = False
                 self.root.after(0, lambda: self.btn.config(
