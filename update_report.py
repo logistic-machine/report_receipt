@@ -65,7 +65,10 @@ class AppRelatorio:
             filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
         )
         if path:
-            self.arquivos[key]['path'] = path
+            if not path.lower().endswith(('.xlsx', '.xls')):
+                messagebox.showwarning("Aviso", "Selecione um arquivo Excel (.xlsx ou .xls).")
+                return
+            self.arquivos[key]['path'] = os.path.normpath(path)
             self.labels_status[key].config(text=os.path.basename(path), fg="green")
             if all(info['path'] for info in self.arquivos.values()):
                 self.btn_processar.config(state="normal")
@@ -239,8 +242,8 @@ class AppRelatorio:
                 df_final.to_excel(output_path, index=False)
                 messagebox.showinfo("Sucesso", f"Relatório gerado com sucesso!\n{output_path}")
 
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro durante o processamento:\n\n{str(e)}")
+        except Exception:
+            messagebox.showerror("Erro", "Erro durante o processamento. Verifique se os arquivos selecionados estão corretos e tente novamente.")
 
 
 # ── Entry point ───────────────────────────────────────────────────────

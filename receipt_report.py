@@ -1,8 +1,23 @@
+import os
+import sys
+
 import pandas as pd
 import numpy as np
 
-df_export = pd.read_excel
-df_wms = pd.read_excel
+if len(sys.argv) != 3:
+    print("Uso: python receipt_report.py <arquivo_export.xlsx> <arquivo_wms.xlsx>")
+    sys.exit(1)
+
+export_path = sys.argv[1]
+wms_path = sys.argv[2]
+
+for fpath in (export_path, wms_path):
+    if not fpath.lower().endswith(('.xlsx', '.xls')):
+        print(f"Erro: '{os.path.basename(fpath)}' n\u00e3o \u00e9 um arquivo Excel v\u00e1lido.")
+        sys.exit(1)
+
+df_export = pd.read_excel(export_path)
+df_wms = pd.read_excel(wms_path)
 
 col_nf_wms = df_wms.columns[-1]
 col_qtd_wms = df_wms.columns[-2]
@@ -35,6 +50,7 @@ df_final = df_final.rename(columns={
 if 'Nº NF-e' != col_nf_wms:
     df_final = df_final.drop(columns=[col_nf_wms])
 
-df_final.to_excel('Recebimento_técnico.xlsx', index=False)
+output_path = os.path.join(os.path.dirname(export_path), 'Recebimento_técnico.xlsx')
+df_final.to_excel(output_path, index=False)
 
-print("✅ Relatório gerado! O valor total agora só aparece na primeira linha de cada nota.")
+print(f"Relat\u00f3rio gerado em: {output_path}")
