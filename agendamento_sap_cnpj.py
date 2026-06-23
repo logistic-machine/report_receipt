@@ -107,6 +107,21 @@ class ProcessadorAgendamento:
                                 ['ITEM', 'Item', 'Itm', 'Item Pedido', 'Nº Item'],
                                 'Pedido Fornecedor')
 
+        # Colunas de valor/quantidade do fornecedor (forecast)
+        c_qtd_atend  = self.col(ped_forn,
+                                ['QTD ATENDIDA', 'Qtd Atendida', 'Quantidade Atendida'],
+                                'Pedido Fornecedor')
+        c_qtd_forn   = self.col(ped_forn,
+                                ['QTD A FORNECER', 'Qtd a Fornecer', 'Quantidade a Fornecer'],
+                                'Pedido Fornecedor')
+        c_vtot_forn  = self.col(ped_forn,
+                                ['VALOR TOTAL', 'Valor Total', 'Val Total'],
+                                'Pedido Fornecedor')
+        c_vunit_forn = self.col(ped_forn,
+                                ['PREÇO UNITÁRIO', 'Preço Unitário', 'Preco Unitario',
+                                 'PRECO UNITARIO', 'Valor Unitário', 'Valor Unitario'],
+                                'Pedido Fornecedor')
+
         ped_forn['__DOC'] = ped_forn[c_doc_compra].astype(str).str.strip()
         ped_forn['__ITEM'] = ped_forn[c_item_forn].astype(str).str.strip()
         filtro_set = set(zip(ped_forn['__DOC'], ped_forn['__ITEM']))
@@ -128,26 +143,9 @@ class ProcessadorAgendamento:
                                       'Item de pedido'], 'SAP Export')
         c_ean      = self.col(sap, ['EAN', 'EAN/UPC', 'Codigo EAN', 'Código EAN',
                                     'GTIN'], 'SAP Export', obrigatorio=False)
-        c_vunit    = self.col(sap, ['Valor unitario', 'Valor unitário', 'Preco unitario',
-                                    'Preço unitário', 'Unit Price', 'Preço líquido'],
-                              'SAP Export')
-        c_vtot     = self.col(sap, ['Valor total', 'Valor Total', 'Total Value',
-                                    'Total', 'Val.total líq.', 'Val.líq.'],
-                              'SAP Export')
-        c_qpend    = self.col(sap, ['Quantidade pendente', 'Qtd pendente', 'Qtd Pendente',
-                                    'Quantidade a fornecer', 'Qtd a Fornecer',
-                                    'Qty Pending', 'Qty Open', 'Qtd.pendente',
-                                    'a fornecer', 'A faturar'],
-                              'SAP Export')
-        c_qsol     = self.col(sap, ['Quantidade solicitada', 'Qtd solicitada',
-                                    'Quantidade pedido', 'Qtd Pedida',
-                                    'Quantidade atendida', 'Qtd Atendida',
-                                    'Qty Ordered', 'Qty Delivered', 'Quantidade',
-                                    'Qtd.pedido'],
-                              'SAP Export')
 
         cols_sap = [c for c in [c_ped, c_item_sap, c_mat, c_desc, c_data, c_centro,
-                                c_contrato, c_ean, c_vunit, c_vtot, c_qpend, c_qsol] if c]
+                                c_contrato, c_ean] if c]
         sap_df = sap[cols_sap].copy()
 
         # -- Filtrar SAP pelo cruzamento com Pedido Fornecedor (DOC COMPRA + ITEM)
@@ -159,6 +157,11 @@ class ProcessadorAgendamento:
             raise ValueError(
                 'Nenhum item do SAP corresponde aos pedidos do fornecedor.\n'
                 'Verifique se as colunas DOC COMPRA/ITEM estao corretas.')
+
+        # -- Merge com dados do fornecedor (valores/quantidades do forecast)
+        ped_cols = ['__DOC', '__ITEM', c_qtd_atend, c_qtd_forn, c_vtot_forn, c_vunit_forn]
+        sap_df = pd.merge(sap_df, ped_forn[ped_cols].drop_duplicates(subset=['__DOC', '__ITEM']),
+                          on=['__DOC', '__ITEM'], how='left')
 
         sap_df['__CONTRATO'] = sap_df[c_contrato].astype(str).str.strip().str.lstrip('0')
 
@@ -208,14 +211,14 @@ class ProcessadorAgendamento:
         out['CNPJ Fornecedor']       = merged[c_cnpj_forn]
         out['CNPJ Emissor']          = merged[c_cnpj_emit] if c_cnpj_emit else merged[c_cnpj_tab]
         out['CNPJ Destinatario']     = merged[c_cnpj_tab]
-        out['Data da Emissao']       = merged[c_data]
+        out['Data da Emissao']       = merged[c_data].astype(str).str.replace('.', '/', regex=False)
         out['EAN']                   = merged[c_ean] if c_ean else ''
         out['Codigo do Produto']     = merged[c_mat]
         out['Descricao do Produto']  = merged[c_desc]
-        out['Valor unitario']        = merged[c_vunit]
-        out['Valor total']           = merged[c_vtot]
-        out['Quantidade Pendente']   = merged[c_qpend]
-        out['Quantidade Solicitada'] = merged[c_qsol]
+        out['Valor unitario']        = merged[c_vunit_forn]
+        out['Valor total']           = merged[c_vtot_forn]
+        out['Quantidade Pendente']   = merged[c_qtd_atend]
+        out['Quantidade Solicitada'] = merged[c_qtd_forn]
 
         out = out.drop_duplicates()
 
